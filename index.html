@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>台灣風土文物探索：島嶼尋寶</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&display=swap');
+        
+        body {
+            font-family: 'Noto Sans TC', sans-serif;
+            background-color: #f0fdf4; /* 淺綠背景 */
+            background-image: radial-gradient(#dcfce7 1px, transparent 1px);
+            background-size: 20px 20px;
+            overflow: hidden; /* 防止觸控拖曳時頁面捲動 */
+        }
+
+        /* 寫實底圖上的半透明互動區域 */
+        .map-region {
+            transition: all 0.3s ease;
+            cursor: pointer;
+            fill: transparent;
+            stroke: rgba(255, 255, 255, 0.55);
+            stroke-width: 1;
+            stroke-linejoin: round;
+        }
+        .map-region:hover {
+            fill: rgba(255, 255, 255, 0.15);
+        }
+        .map-region.highlight {
+            fill: rgba(251, 191, 36, 0.25);
+            stroke: #fbbf24;
+            stroke-width: 2;
+            filter: drop-shadow(0 0 8px rgba(251, 191, 36, 0.8));
+        }
+        .map-region.completed {
+            fill: rgba(52, 211, 153, 0.18);
+        }
+        .map-region.completed.highlight {
+            fill: rgba(251, 191, 36, 0.25);
+        }
+        .map-label {
+            fill: white;
+            font-size: 11px;
+            font-weight: 700;
+            text-anchor: middle;
+            paint-order: stroke;
+            stroke: rgba(15, 23, 42, 0.8);
+            stroke-width: 3px;
+            stroke-linejoin: round;
+        }
+
+        /* 卡牌拖曳相關樣式 */
+        .draggable-card {
+            touch-action: none; /* 關鍵：防止觸控時瀏覽器預設的滾動/縮放 */
+            user-select: none;
+            will-change: transform;
+            cursor: grab;
+            transition: transform 0.1s ease, box-shadow 0.1s ease;
+        }
+        .draggable-card:active {
+            cursor: grabbing;
+        }
+        .card-art {
+            object-fit: cover;
+            pointer-events: none;
+            -webkit-user-drag: none;
+        }
+        .dragging {
+            opacity: 0.9;
+            transform: scale(1.05);
+            box-shadow: 0 15px 30px rgba(0,0,0,0.2);
+            z-index: 100;
+            /* 拖曳時忽略滑鼠事件，讓下方的地圖能接收到 drop 判斷 */
+            pointer-events: none; 
+        }
+
+        /* 動畫效果 */
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            25% { transform: translateX(-8px) rotate(-3deg); }
+            50% { transform: translateX(8px) rotate(3deg); }
+            75% { transform: translateX(-8px) rotate(-3deg); }
+        }
+        .shake-animation {
+            animation: shake 0.4s ease-in-out;
+        }
+
+        @keyframes popIn {
+            0% { transform: scale(0.5); opacity: 0; }
+            80% { transform: scale(1.1); opacity: 1; }
+            100% { transform: scale(1); opacity: 1; }
+        }
+        .pop-in {
+            animation: popIn 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+        }
+
+        /* 隱藏捲軸但可滾動 */
+        .no-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+        .no-scrollbar {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+    </style>
+</head>
+<body class="h-screen w-screen flex flex-col text-slate-800">
+
+    <!-- 頂部資訊列 -->
+    <header class="bg-white/80 backdrop-blur-md shadow-sm z-10 px-6 py-3 flex justify-between items-center shrink-0 border-b-4 border-green-500">
+        <div class="flex items-center gap-3">
+            <i class="fa-solid fa-map-location-dot text-2xl text-green-600"></i>
+            <h1 class="text-xl md:text-2xl font-black text-slate-800 tracking-wide">島嶼尋寶：風土文物探險</h1>
+        </div>
+        <div class="bg-green-100 px-4 py-2 rounded-full border-2 border-green-300 font-bold text-green-800 flex items-center gap-2 shadow-inner">
+            <i class="fa-solid fa-star text-yellow-500"></i>
+            進度：<span id="score-display">0 / 12</span>
+        </div>
+    </header>
+
+    <!-- 遊戲主要區域 -->
+    <main class="flex-1 flex flex-col md:flex-row overflow-hidden relative">
+        
+        <!-- 左側/上方：台灣地圖區 -->
+        <section class="flex-1 relative flex justify-center items-center p-4 min-h-0 bg-blue-50/50">
+            <!-- 提示訊息 Toast -->
+            <div id="toast" class="absolute top-4 left-1/2 -translate-x-1/2 bg-red-500 text-white px-6 py-3 rounded-full shadow-lg font-bold opacity-0 transition-opacity duration-300 z-20 pointer-events-none flex items-center gap-2">
+                <i class="fa-solid fa-circle-exclamation"></i>
+                <span id="toast-msg">錯誤提示</span>
+            </div>
+
+            <!-- 底圖與互動區共用座標，縮放時保持對齊；分區為遊戲示意範圍。 -->
+            <svg id="taiwan-map" viewBox="0 0 400 600" preserveAspectRatio="xMidYMid meet" aria-label="台灣地形與七個文物探索區域" class="w-full h-full max-w-[560px] max-h-full drop-shadow-xl rounded-2xl">
+                <image href="assets/taiwan-realistic-45deg-v1.png" x="0" y="0" width="400" height="600" pointer-events="none"/>
+                
+                <!-- 區域 1: 北北基宜 (北部) -->
+                <polygon data-region="north" data-icon-x="310" data-icon-y="82" class="map-region drop-target"
+                         points="260,56 289,42 294,30 311,26 320,38 319,43 335,49 339,59 354,65 379,75 365,81 359,96 359,104 350,113 347,122 349,131 285,123 264,96">
+                    <title>北部地區 (北北基宜)</title>
+                </polygon>
+                <!-- 區域 2: 桃竹苗 (西北) -->
+                <polygon data-region="northwest" data-icon-x="213" data-icon-y="133" class="map-region drop-target"
+                         points="260,56 264,96 244,142 208,171 166,192 137,182 126,170 128,159 151,137 160,124 174,108 197,98 216,88 226,63">
+                    <title>西北地區 (桃竹苗)</title>
+                </polygon>
+                <!-- 區域 3: 中彰投 (中部) -->
+                <polygon data-region="center" data-icon-x="163" data-icon-y="235" class="map-region drop-target"
+                         points="126,170 137,182 166,192 208,171 244,142 246,212 217,266 143,298 64,286 65,278 72,265 88,251 81,243 100,226 96,212 115,191 114,185">
+                    <title>中部地區 (中彰投)</title>
+                </polygon>
+                <!-- 區域 4: 雲嘉南 (西南) -->
+                <polygon data-region="southwest" data-icon-x="108" data-icon-y="344" class="map-region drop-target"
+                         points="64,286 143,298 217,266 181,366 123,399 69,422 48,416 42,400 31,386 36,373 29,363 32,349 34,331 42,320 44,302 57,295">
+                    <title>西南地區 (雲嘉南)</title>
+                </polygon>
+                <!-- 區域 5: 高屏 (南部) -->
+                <polygon data-region="south" data-icon-x="137" data-icon-y="468" class="map-region drop-target"
+                         points="48,416 69,422 123,399 181,366 174,433 211,465 198,487 190,511 190,535 185,551 170,560 168,568 159,558 153,565 144,557 146,542 135,513 119,498 83,481 81,470 70,462 70,450 62,440 56,431">
+                    <title>南部地區 (高屏)</title>
+                </polygon>
+                <!-- 區域 6: 花東 (東部) -->
+                <polygon data-region="east" data-icon-x="286" data-icon-y="217" class="map-region drop-target"
+                         points="264,96 285,123 349,131 349,149 335,173 326,183 327,201 315,213 310,232 299,250 293,271 289,287 235,283 217,266 246,212 244,142">
+                    <title>花蓮地區</title>
+                </polygon>
+                 <polygon data-region="east-south" data-icon-x="231" data-icon-y="360" class="map-region drop-target"
+                         points="217,266 235,283 289,287 281,319 269,349 259,371 239,408 215,449 211,465 174,433 181,366">
+                    <title>台東地區</title>
+                </polygon>
+                
+                <g class="map-label" pointer-events="none" aria-hidden="true">
+                    <text x="310" y="109">北北基宜</text>
+                    <text x="213" y="160">桃竹苗</text>
+                    <text x="163" y="262">中彰投</text>
+                    <text x="108" y="371">雲嘉南</text>
+                    <text x="137" y="495">高屏</text>
+                    <text x="286" y="244">花蓮</text>
+                    <text x="231" y="387">台東</text>
+                </g>
+                <!-- 圖示不攔截拖曳命中，讓同區第二張文物仍可放置。 -->
+                <g id="placed-icons-layer" pointer-events="none"></g>
+            </svg>
+        </section>
+
+        <!-- 右側/下方：卡牌池 (手牌區) -->
+        <section class="w-full md:w-80 lg:w-96 bg-white border-t-4 md:border-t-0 md:border-l-4 border-slate-200 shadow-[0_-10px_15px_-3px_rgba(0,0,0,0.1)] flex flex-col shrink-0 z-10">
+            <div class="p-4 bg-slate-50 border-b border-slate-200 flex justify-between items-center">
+                <h2 class="font-bold text-slate-700"><i class="fa-solid fa-box-open mr-2 text-amber-600"></i>待考驗文物 (手牌)</h2>
+                <span class="text-xs bg-slate-200 text-slate-600 px-2 py-1 rounded">拖曳至地圖對應位置</span>
+            </div>
+            
+            <!-- 卡牌容器 (橫向滾動 on mobile, 縱向 on desktop) -->
+            <div id="card-pool" class="flex-1 p-4 flex flex-row md:flex-col gap-4 overflow-auto no-scrollbar items-center md:items-stretch pb-8">
+                <!-- 卡牌會由 JS 動態生成插入於此 -->
+            </div>
+        </section>
+    </main>
+
+    <!-- 知識百科彈窗 (答對時顯示) -->
+    <div id="info-modal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex justify-center items-center hidden opacity-0 transition-opacity duration-300">
+        <div class="bg-white w-11/12 max-w-md max-h-[90dvh] rounded-2xl shadow-2xl overflow-y-auto transform scale-95 transition-transform duration-300" id="info-modal-content">
+            <div class="bg-green-500 p-4 text-center relative">
+                <div class="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/cubes.png')] opacity-20"></div>
+                <img id="modal-art" alt="" width="192" height="192" draggable="false" class="card-art w-48 h-48 mx-auto mb-3 rounded-xl shadow-lg relative z-10 border-2 border-white/70">
+                <h3 class="text-2xl font-black text-white relative z-10 tracking-widest" id="modal-title">文物名稱</h3>
+            </div>
+            <div class="p-6">
+                <p class="text-slate-600 leading-relaxed text-lg mb-4" id="modal-desc">這裡會顯示文物的詳細知識介紹，適合國中生的深度。</p>
+                <div class="bg-amber-50 border border-amber-200 rounded-lg p-3 flex gap-3 items-center">
+                    <i class="fa-solid fa-location-dot text-amber-500 text-xl"></i>
+                    <div>
+                        <span class="block text-sm text-slate-500">所屬區域</span>
+                        <strong class="text-amber-800" id="modal-region">台灣某處</strong>
+                    </div>
+                </div>
+                <button onclick="closeModal()" class="w-full mt-6 bg-slate-800 hover:bg-slate-700 text-white font-bold py-3 px-4 rounded-xl transition-colors shadow-md">
+                    繼續探險 <i class="fa-solid fa-arrow-right ml-1"></i>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 遊戲完成彈窗 -->
+    <div id="win-modal" class="fixed inset-0 bg-yellow-500/90 backdrop-blur-md z-[60] flex justify-center items-center hidden opacity-0 transition-opacity duration-500">
+        <div class="bg-white p-8 rounded-3xl shadow-2xl text-center max-w-sm mx-4 transform scale-90 transition-transform duration-500 pop-in" id="win-modal-content">
+            <i class="fa-solid fa-trophy text-6xl text-yellow-400 mb-4 drop-shadow-lg"></i>
+            <h2 class="text-3xl font-black text-slate-800 mb-2">台灣通！</h2>
+            <p class="text-slate-600 mb-6">你已經成功將所有風土文物歸位，展現了卓越的地理與文化知識！</p>
+            <button onclick="location.reload()" class="bg-gradient-to-r from-yellow-400 to-yellow-500 hover:from-yellow-500 hover:to-yellow-600 text-white font-bold py-3 px-8 rounded-full shadow-lg transform transition hover:scale-105">
+                再玩一次
+            </button>
+        </div>
+    </div>
+
+    <script>
+        // 遊戲資料庫 (分為 7 個主要區域，每個區域 2 個文物 = 共 14 個)
+        const gameData = [
+            // 北部 (north)
+            { id: 'n1', region: 'north', regionName: '北部 (北北基宜)', name: '台北 101', image: 'assets/cards/n1.png', desc: '曾是世界第一高樓，融合了東方竹子節節高升的意象，是台灣最著名的現代地標。', hint: '它曾是世界最高建築，位於台灣首善之都。' },
+            { id: 'n2', region: 'north', regionName: '北部 (北北基宜)', name: '野柳女王頭', image: 'assets/cards/n2.png', desc: '位於北海岸的蕈狀岩，因蕈狀岩頂部受到風化與侵蝕，形狀宛如尊貴的女王頭像。', hint: '這是一顆在北海岸吹海風、形狀像皇后的石頭。' },
+            // 西北 (northwest)
+            { id: 'nw1', region: 'northwest', regionName: '西北 (桃竹苗)', name: '國際機場', image: 'assets/cards/nw1-v2.png', desc: '台灣最主要的國際航空樞紐，每天吞吐大量來自世界各地的旅客。', hint: '出國搭飛機最常去的地方，位於國門之都。' },
+            { id: 'nw2', region: 'northwest', regionName: '西北 (桃竹苗)', name: '科學園區', image: 'assets/cards/nw2.png', desc: '被稱為「台灣矽谷」，是半導體與高科技產業的重鎮，為台灣創造巨大經濟產值。', hint: '風很大的城市裡，孕育了台灣的高科技奇蹟。' },
+            // 中部 (center)
+            { id: 'c1', region: 'center', regionName: '中部 (中彰投)', name: '大甲媽祖', image: 'assets/cards/c1.png', desc: '每年春季的遶境進香活動，被譽為世界三大宗教盛事之一，展現強大民間信仰力量。', hint: '每年春天會舉行盛大的遶境活動，起點在海線城市。' },
+            { id: 'c2', region: 'center', regionName: '中部 (中彰投)', name: '太陽餅', image: 'assets/cards/c2.png', desc: '皮薄酥香、內餡甜而不膩，是搭火車經過此地必買的傳統伴手禮。', hint: '一種以天體命名的美味糕餅，是中部大城的名產。' },
+            // 西南 (southwest)
+            { id: 'sw1', region: 'southwest', regionName: '西南 (雲嘉南)', name: '安平古堡', image: 'assets/cards/sw1.png', desc: '十七世紀由荷蘭人建立的熱蘭遮城，是台灣最早的要塞建築，見證大航海時代。', hint: '荷蘭人蓋的古老城堡，位在充滿美食的古都。' },
+            { id: 'sw2', region: 'southwest', regionName: '西南 (雲嘉南)', name: '阿里山小火車', image: 'assets/cards/sw2.png', desc: '為了伐木而建的高山鐵路，現在以日出、雲海、神木與櫻花聞名世界。', hint: '這列紅色小火車會爬上高山，去看美麗的日出。' },
+            // 南部 (south)
+            { id: 's1', region: 'south', regionName: '南部 (高屏)', name: '龍虎塔', image: 'assets/cards/s1.png', desc: '位於蓮池潭的著名地標，傳統習俗說要「入龍喉、出虎口」才能消災解厄。', hint: '在港都的蓮池潭旁，有兩隻巨大的神獸。' },
+            { id: 's2', region: 'south', regionName: '南部 (高屏)', name: '熱帶國家公園', image: 'assets/cards/s2.png', desc: '台灣最南端的國家公園，擁有美麗的珊瑚礁海岸與熱帶季風林生態。', hint: '台灣最南端，充滿陽光、沙灘與比基尼的地方。' },
+            // 花蓮 (east)
+            { id: 'e1', region: 'east', regionName: '花蓮', name: '大理岩峽谷', image: 'assets/cards/e1.png', desc: '以雄偉壯麗、幾近垂直的大理岩峽谷景觀聞名，是大自然的鬼斧神工。', hint: '東部最著名的國家公園，充滿壯麗的峽谷地形。' },
+            { id: 'e2', region: 'east', regionName: '花蓮', name: '手工麻糬', image: 'assets/cards/e2.png', desc: '受到原住民與日治時期文化影響，發展出Q彈美味的特色點心。', hint: '去東部玩必買的Q彈甜點，通常包著紅豆或花生。' },
+            // 台東 (east-south)
+            { id: 'es1', region: 'east-south', regionName: '台東', name: '伯朗大道', image: 'assets/cards/es1.png', desc: '位於池上鄉，兩旁是一望無際的稻田，因拍攝咖啡與航空廣告而爆紅。', hint: '一條沒有電線桿的筆直鄉間小路，還有一棵明星樹。' },
+            { id: 'es2', region: 'east-south', regionName: '台東', name: '熱氣球嘉年華', image: 'assets/cards/es2.png', desc: '每年夏天在鹿野高台舉辦，色彩繽紛的熱氣球點綴在縱谷天空，十分夢幻。', hint: '夏天在鹿野高台，天空會飄滿彩色的巨大氣球。' }
+        ];
+
+        // 遊戲狀態
+        let deck = []; // 尚未抽取的卡牌
+        let hand = []; // 當前在手牌區的卡牌
+        const maxHandSize = 4; // 手牌區最多顯示幾張
+        let score = 0;
+        const totalItems = gameData.length;
+
+        // 洗牌函數
+        function shuffle(array) {
+            for (let i = array.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [array[i], array[j]] = [array[j], array[i]];
+            }
+            return array;
+        }
+
+        // 初始化遊戲
+        function initGame() {
+            deck = shuffle([...gameData]);
+            document.getElementById('score-display').innerText = `0 / ${totalItems}`;
+            replenishHand();
+        }
+
+        // 補充手牌區
+        function replenishHand() {
+            const pool = document.getElementById('card-pool');
+            
+            // 如果手牌未滿，且牌組還有牌，就抽牌
+            while (hand.length < maxHandSize && deck.length > 0) {
+                const cardData = deck.pop();
+                hand.push(cardData);
+                
+                // 建立卡牌 DOM
+                const cardEl = document.createElement('div');
+                cardEl.className = 'draggable-card bg-white rounded-xl p-3 shadow-sm border-2 border-slate-200 flex items-center gap-3 shrink-0 w-80 max-w-full md:w-auto relative overflow-hidden pop-in';
+                cardEl.dataset.id = cardData.id;
+                cardEl.dataset.region = cardData.region;
+                
+                // 裝飾用背景色塊
+                const decor = document.createElement('div');
+                decor.className = 'absolute -right-4 -top-4 w-16 h-16 bg-blue-50 rounded-full z-0';
+                cardEl.appendChild(decor);
+
+                // 卡牌內容
+                cardEl.innerHTML += `
+                    <img src="${cardData.image}" alt="${cardData.name}動漫插圖" width="112" height="112" draggable="false" class="card-art relative z-10 w-24 h-24 md:w-28 md:h-28 rounded-lg shrink-0 border border-slate-100">
+                    <div class="flex-1 relative z-10">
+                        <h3 class="font-bold text-slate-800 text-lg">${cardData.name}</h3>
+                        <p class="text-xs text-slate-500 mt-1 line-clamp-2">拖曳至地圖解鎖知識...</p>
+                    </div>
+                    <i class="fa-solid fa-grip-lines text-slate-300 md:hidden relative z-10"></i>
+                `;
+                
+                pool.appendChild(cardEl);
+                
+                // 綁定拖曳事件
+                attachDragEvents(cardEl);
+            }
+        }
+
+        let activeCard = null;
+        let startX = 0, startY = 0;
+        let initialTransform = '';
+        let rect = null;
+
+        function attachDragEvents(el) {
+            // 使用 Pointer Events 支援滑鼠與觸控
+            el.addEventListener('pointerdown', handlePointerDown);
+        }
+
+        function handlePointerDown(e) {
+            if (activeCard) return; // 一次只能拖一個
+            
+            activeCard = e.currentTarget;
+            activeCard.setPointerCapture(e.pointerId); // 鎖定指標
+            
+            // 記錄初始位置
+            startX = e.clientX;
+            startY = e.clientY;
+            rect = activeCard.getBoundingClientRect();
+            
+            // 替換 class 以顯示拖曳狀態
+            activeCard.classList.add('dragging');
+            activeCard.classList.remove('pop-in'); // 移除進場動畫避免干擾 transform
+            
+            // 綁定移動與放開事件
+            activeCard.addEventListener('pointermove', handlePointerMove);
+            activeCard.addEventListener('pointerup', handlePointerUp);
+            activeCard.addEventListener('pointercancel', handlePointerUp);
+        }
+
+        function handlePointerMove(e) {
+            if (!activeCard) return;
+            
+            // 計算位移
+            const dx = e.clientX - startX;
+            const dy = e.clientY - startY;
+            
+            // 套用位移 (相對於原本位置)
+            activeCard.style.transform = `translate(${dx}px, ${dy}px) scale(1.05) rotate(${dx * 0.05}deg)`;
+            
+            // 高亮判定 (利用 document.elementFromPoint)
+            // 由於 .dragging 設有 pointer-events: none，elementFromPoint 會抓到下方的元素
+            const elUnderPointer = document.elementFromPoint(e.clientX, e.clientY);
+            
+            // 重置所有地圖高亮
+            document.querySelectorAll('.map-region').forEach(r => r.classList.remove('highlight'));
+            
+            if (elUnderPointer && elUnderPointer.classList.contains('drop-target')) {
+                elUnderPointer.classList.add('highlight');
+            }
+        }
+
+        function handlePointerUp(e) {
+            if (!activeCard) return;
+            
+            const card = activeCard; // 緩存
+            const elUnderPointer = document.elementFromPoint(e.clientX, e.clientY);
+            
+            // 重置地圖高亮
+            document.querySelectorAll('.map-region').forEach(r => r.classList.remove('highlight'));
+            
+            // 清理事件與狀態
+            card.releasePointerCapture(e.pointerId);
+            card.removeEventListener('pointermove', handlePointerMove);
+            card.removeEventListener('pointerup', handlePointerUp);
+            card.removeEventListener('pointercancel', handlePointerUp);
+            card.classList.remove('dragging');
+            activeCard = null;
+
+            // 判斷是否放置在有效區域
+            let droppedRegion = null;
+            if (elUnderPointer && elUnderPointer.classList.contains('drop-target')) {
+                droppedRegion = elUnderPointer.dataset.region;
+            } else if (elUnderPointer && elUnderPointer.parentElement && elUnderPointer.parentElement.classList.contains('drop-target')) {
+                // 有時候會點到 polygon 內部的 text/title
+                droppedRegion = elUnderPointer.parentElement.dataset.region;
+            }
+
+            const correctRegion = card.dataset.region;
+            const itemData = hand.find(i => i.id === card.dataset.id);
+
+            if (droppedRegion === correctRegion) {
+                // 答對了！
+                handleCorrectDrop(card, itemData, elUnderPointer);
+            } else if (droppedRegion) {
+                // 放錯區域
+                handleWrongDrop(card, itemData);
+            } else {
+                // 沒放到地圖上，彈回原位
+                snapBack(card);
+            }
+        }
+
+        function snapBack(card) {
+            card.style.transition = 'transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275)';
+            card.style.transform = 'translate(0px, 0px)';
+            setTimeout(() => {
+                card.style.transition = ''; // 移除 inline transition，恢復 css 預設
+            }, 300);
+        }
+
+        function handleWrongDrop(card, itemData) {
+            snapBack(card);
+            
+            // 播放錯誤震動
+            card.classList.add('shake-animation');
+            setTimeout(() => card.classList.remove('shake-animation'), 400);
+
+            // 顯示 Toast 提示
+            showToast(`不對喔！提示：${itemData.hint}`);
+        }
+
+        function handleCorrectDrop(card, itemData, regionElement) {
+            // 1. 移除卡牌
+            card.style.opacity = '0';
+            card.style.transform = 'scale(0)';
+            setTimeout(() => card.remove(), 300);
+            
+            // 2. 從手牌資料中移除
+            hand = hand.filter(i => i.id !== itemData.id);
+            
+            // 3. 更新分數
+            score++;
+            document.getElementById('score-display').innerText = `${score} / ${totalItems}`;
+            
+            // 4. 在地圖上繪製小圖示
+            drawIconOnMap(itemData, regionElement);
+            
+            // 5. 區域稍微變色表示探索過 (可選)
+            regionElement.classList.add('completed');
+
+            // 6. 顯示知識彈窗
+            showModal(itemData);
+            
+            // 7. 補充手牌
+            setTimeout(replenishHand, 400);
+            
+            // 8. 檢查勝利
+            if (score === totalItems) {
+                setTimeout(showWinScreen, 1500); // 彈窗關閉後顯示
+            }
+        }
+
+        function drawIconOnMap(itemData, polygonElement) {
+            const svgLayer = document.getElementById('placed-icons-layer');
+            // 使用島內固定錨點，讓每區兩張文物並排且不落到海上。
+            const placedCount = svgLayer.querySelectorAll(`image[data-region="${itemData.region}"]`).length;
+            const cx = Number(polygonElement.dataset.iconX) + (placedCount === 0 ? -16 : 16);
+            const cy = Number(polygonElement.dataset.iconY);
+            
+            const imageEl = document.createElementNS("http://www.w3.org/2000/svg", "image");
+            imageEl.setAttribute("x", cx - 14);
+            imageEl.setAttribute("y", cy - 14);
+            imageEl.setAttribute("width", "28");
+            imageEl.setAttribute("height", "28");
+            imageEl.setAttribute("href", itemData.image);
+            imageEl.setAttribute("aria-label", itemData.name);
+            imageEl.setAttribute("class", "pop-in drop-shadow-md");
+            imageEl.dataset.region = itemData.region;
+            
+            // 加上白色外框增強可見度
+            const bgEl = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+            bgEl.setAttribute("x", cx - 16);
+            bgEl.setAttribute("y", cy - 16);
+            bgEl.setAttribute("width", "32");
+            bgEl.setAttribute("height", "32");
+            bgEl.setAttribute("rx", "4");
+            bgEl.setAttribute("fill", "rgba(255,255,255,0.8)");
+            bgEl.setAttribute("class", "pop-in shadow-sm");
+            
+            svgLayer.appendChild(bgEl);
+            svgLayer.appendChild(imageEl);
+        }
+
+        // UI 互動函數
+        let toastTimeout;
+        function showToast(msg) {
+            const toast = document.getElementById('toast');
+            document.getElementById('toast-msg').innerText = msg;
+            toast.classList.remove('opacity-0', '-translate-y-4');
+            
+            clearTimeout(toastTimeout);
+            toastTimeout = setTimeout(() => {
+                toast.classList.add('opacity-0', '-translate-y-4');
+            }, 3500);
+        }
+
+        function showModal(itemData) {
+            const modalArt = document.getElementById('modal-art');
+            modalArt.src = itemData.image;
+            modalArt.alt = `${itemData.name}動漫插圖`;
+            document.getElementById('modal-title').innerText = itemData.name;
+            document.getElementById('modal-desc').innerText = itemData.desc;
+            document.getElementById('modal-region').innerText = itemData.regionName;
+            
+            const modal = document.getElementById('info-modal');
+            const content = document.getElementById('info-modal-content');
+            
+            modal.classList.remove('hidden');
+            // 強制重繪
+            void modal.offsetWidth; 
+            modal.classList.remove('opacity-0');
+            content.classList.remove('scale-95');
+            content.classList.add('scale-100');
+        }
+
+        function closeModal() {
+            const modal = document.getElementById('info-modal');
+            const content = document.getElementById('info-modal-content');
+            
+            modal.classList.add('opacity-0');
+            content.classList.remove('scale-100');
+            content.classList.add('scale-95');
+            
+            setTimeout(() => {
+                modal.classList.add('hidden');
+            }, 300);
+        }
+
+        function showWinScreen() {
+            const modal = document.getElementById('win-modal');
+            modal.classList.remove('hidden');
+            void modal.offsetWidth; 
+            modal.classList.remove('opacity-0');
+        }
+
+        // 啟動遊戲
+        window.onload = initGame;
+    </script>
+</body>
+</html>
